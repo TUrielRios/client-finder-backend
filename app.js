@@ -69,6 +69,10 @@ const getMapsData = async (query) => {
     return businesses;
 };
 
+app.get('/', async (req,res) =>{
+    return res.send('Hello world!')
+})
+
 
 // Ruta para hacer scraping de negocios en Google Maps
 app.post('/api/scrape', async (req, res) => {
