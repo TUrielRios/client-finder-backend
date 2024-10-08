@@ -1,5 +1,6 @@
 const express = require('express');
-const puppeteer = require('puppeteer'); // Usamos puppeteer normal
+const puppeteer = require('puppeteer-core');
+const chrome = require('chrome-aws-lambda');
 const cors = require('cors');
 
 const app = express();
@@ -49,11 +50,10 @@ const scrollPage = async (page, scrollContainer, itemTargetCount) => {
 
 const getMapsData = async (query) => {
     const browser = await puppeteer.launch({
-        headless: true,
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
-        ], // Estos argumentos son importantes para entornos de deploy como Vercel o Heroku
+        executablePath: await chrome.executablePath,
+        args: chrome.args,
+        defaultViewport: chrome.defaultViewport,
+        headless: chrome.headless,
     });
 
     const [page] = await browser.pages();
