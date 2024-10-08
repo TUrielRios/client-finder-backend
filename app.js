@@ -87,6 +87,7 @@ app.post('/api/scrape', async (req, res) => {
     } catch (error) {
         console.error('Error al hacer scraping:', error);
         res.status(500).json({ error: 'Error al hacer scraping' });
+        res.status(500).json({ error: error.message });
     }
 });
 
