@@ -1,6 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
-const chrome = require('chrome-aws-lambda');
+const { chromium } = require('playwright'); // Usamos Playwright con Chromium
 const cors = require('cors');
 
 const app = express();
@@ -12,14 +11,12 @@ const extractItems = async (page) => {
         return Array.from(document.querySelectorAll(".Nv2PK")).map((el) => {
             const link = el.querySelector("a.hfpxzc")?.getAttribute("href");
 
-            // Filtramos los spans que contienen números de teléfono válidos
             let phone = Array.from(el.querySelectorAll(".W4Efsd span"))
                 .map(span => span.textContent.trim())
-                .find(text => text.match(/^\+?\d{1,4}[\d\s.-]{7,}$/));  // Números de teléfono comunes con longitud mínima
+                .find(text => text.match(/^\+?\d{1,4}[\d\s.-]{7,}$/));
 
-            // Si el número no tiene código de país, añadimos el código de área predeterminado (por ejemplo, +54)
             if (phone && !phone.startsWith('+')) {
-                phone = `+54 ${phone}`; // Aquí puedes cambiar +54 por el código de tu país
+                phone = `+54 ${phone}`; // Cambia +54 por el código de país correspondiente
             }
 
             return {
@@ -28,13 +25,12 @@ const extractItems = async (page) => {
                 description: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(2)")?.textContent.replace("·", "").trim(),
                 website: el.querySelector("a.lcr4fd")?.getAttribute("href"),
                 category: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(1) > span:first-child")?.textContent.replaceAll("·", "").trim(),
-                phone_num: phone || 'No phone available',  // Solo mostramos si el teléfono es válido
+                phone_num: phone || 'No phone available',
             };
         });
     });
     return maps_data;
 };
-
 
 const scrollPage = async (page, scrollContainer, itemTargetCount) => {
     let items = [];
@@ -42,21 +38,17 @@ const scrollPage = async (page, scrollContainer, itemTargetCount) => {
     while (itemTargetCount > items.length) {
         items = await extractItems(page);
         await page.evaluate(`document.querySelector("${scrollContainer}").scrollTo(0, document.querySelector("${scrollContainer}").scrollHeight)`);
-        await page.evaluate(`document.querySelector("${scrollContainer}").scrollHeight > ${previousHeight}`);
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
     return items;
 };
 
 const getMapsData = async (query) => {
-    const browser = await puppeteer.launch({
-        executablePath: await chrome.executablePath,
-        args: chrome.args,
-        defaultViewport: chrome.defaultViewport,
-        headless: chrome.headless,
+    const browser = await chromium.launch({
+        headless: true,
     });
 
-    const [page] = await browser.pages();
+    const page = await browser.newPage();
 
     await page.setExtraHTTPHeaders({
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4882.194 Safari/537.36",
