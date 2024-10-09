@@ -1,5 +1,5 @@
 const express = require('express');
-const { chromium } = require('playwright'); // Usamos Playwright con Chromium
+const { chromium } = require('playwright');  // Usamos playwright normal
 const cors = require('cors');
 
 const app = express();
@@ -16,7 +16,7 @@ const extractItems = async (page) => {
                 .find(text => text.match(/^\+?\d{1,4}[\d\s.-]{7,}$/));
 
             if (phone && !phone.startsWith('+')) {
-                phone = `+54 ${phone}`; // Cambia +54 por el código de país correspondiente
+                phone = `+54 ${phone}`;
             }
 
             return {
@@ -46,6 +46,12 @@ const scrollPage = async (page, scrollContainer, itemTargetCount) => {
 const getMapsData = async (query) => {
     const browser = await chromium.launch({
         headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',  // Esto ayuda a prevenir problemas con el espacio compartido en memoria
+            '--disable-gpu',             // Desactivar la GPU para entornos sin gráficos
+        ],
     });
 
     const page = await browser.newPage();
