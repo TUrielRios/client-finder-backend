@@ -1,11 +1,69 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const cors = require('cors');
-const { parsePhoneNumberFromString } = require('libphonenumber-js'); // Librería para validar teléfonos
+const { parsePhoneNumberFromString } = require('libphonenumber-js');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Función para detectar el tipo de web que tiene el negocio
+const analyzeWebsite = (website) => {
+    if (!website || website === 'No website') {
+        return { type: 'none', needsWebsite: true, priority: 'high' };
+    }
+    
+    const url = website.toLowerCase();
+    
+    if (url.includes('instagram.com') || url.includes('facebook.com') || 
+        url.includes('tiktok.com') || url.includes('twitter.com')) {
+        return { type: 'social_only', needsWebsite: true, priority: 'high' };
+    }
+    
+    if (url.includes('wordpress.com') || url.includes('wix.com') || 
+        url.includes('squarespace.com') || url.includes('weebly.com')) {
+        return { type: 'basic_platform', needsWebsite: false, priority: 'medium' };
+    }
+    
+    return { type: 'professional', needsWebsite: false, priority: 'low' };
+};
+
+// Función para calcular score de oportunidad
+const calculateOpportunityScore = (business) => {
+    let score = 0;
+    
+    // Verificar que websiteAnalysis existe antes de usarlo
+    if (!business.websiteAnalysis) {
+        console.warn('websiteAnalysis missing for business:', business.title);
+        return 0;
+    }
+    
+    // Sin web o solo redes sociales = alta prioridad
+    if (business.websiteAnalysis.needsWebsite) score += 40;
+    
+    // Tiene teléfono válido
+    if (business.phone_num && business.phone_num !== 'No phone available') score += 20;
+    
+    // Categorías con mayor probabilidad de necesitar web
+    const highValueCategories = [
+        'restaurant', 'hotel', 'dentist', 'lawyer', 'doctor', 'clinic',
+        'beauty', 'salon', 'gym', 'fitness', 'real estate', 'construction',
+        'accounting', 'consulting', 'photography', 'catering', 'retail'
+    ];
+    
+    if (business.category && highValueCategories.some(cat => 
+        business.category.toLowerCase().includes(cat))) {
+        score += 25;
+    }
+    
+    // Bonus por tener descripción detallada
+    if (business.description && business.description.length > 50) score += 10;
+    
+    // Penalización si ya tiene web profesional
+    if (business.websiteAnalysis.type === 'professional') score -= 30;
+    
+    return Math.max(0, Math.min(100, score));
+};
 
 const extractItems = async (page) => {
     try {
@@ -13,19 +71,34 @@ const extractItems = async (page) => {
             return Array.from(document.querySelectorAll(".Nv2PK")).map((el) => {
                 const link = el.querySelector("a.hfpxzc")?.getAttribute("href");
 
+                // Extraer rating y número de reseñas
+                const ratingElement = el.querySelector(".MW4etd");
+                const rating = ratingElement ? parseFloat(ratingElement.textContent.trim()) : null;
+                
+                const reviewsElement = el.querySelector(".UY7F9");
+                const reviewsText = reviewsElement ? reviewsElement.textContent.trim() : '';
+                const reviewCount = reviewsText.match(/$$(\d+)$$/) ? parseInt(reviewsText.match(/$$(\d+)$$/)[1]) : 0;
+
+                // Extraer horarios de funcionamiento
+                const hoursElement = el.querySelector(".G8aQO");
+                const hours = hoursElement ? hoursElement.textContent.trim() : 'Hours not available';
+
                 // Filtramos los spans que contienen números de teléfono válidos
                 let phone = Array.from(el.querySelectorAll(".W4Efsd span"))
                     .map(span => span.textContent.trim())
-                    .find(text => text.match(/^\+?\d{1,4}[\d\s.-]{7,}$/));  // Números de teléfono comunes con longitud mínima
+                    .find(text => text.match(/^\+?\d{1,4}[\d\s.-]{7,}$/));
 
-                // Retornar los datos de cada negocio
+                // Retornar los datos de cada negocio con información adicional
                 return {
-                    title: el.querySelector(".qBF1Pd")?.textContent.trim(),
-                    address: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(1) > span:last-child")?.textContent.replaceAll("·", "").trim(),
-                    description: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(2)")?.textContent.replace("·", "").trim(),
-                    website: el.querySelector("a.lcr4fd")?.getAttribute("href"),
-                    category: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(1) > span:first-child")?.textContent.replaceAll("·", "").trim(),
+                    title: el.querySelector(".qBF1Pd")?.textContent.trim() || 'Unknown Business',
+                    address: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(1) > span:last-child")?.textContent.replaceAll("·", "").trim() || 'Address not available',
+                    description: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(2)")?.textContent.replace("·", "").trim() || '',
+                    website: el.querySelector("a.lcr4fd")?.getAttribute("href") || null,
+                    category: el.querySelector(".W4Efsd:last-child > .W4Efsd:nth-of-type(1) > span:first-child")?.textContent.replaceAll("·", "").trim() || 'Unknown Category',
                     phone_num: phone || 'No phone available',
+                    rating: rating,
+                    reviewCount: reviewCount,
+                    hours: hours,
                     link
                 };
             });
@@ -39,8 +112,8 @@ const scrollPage = async (page, scrollContainer, itemTargetCount) => {
     try {
         let items = [];
         let previousHeight = await page.evaluate(`document.querySelector("${scrollContainer}").scrollHeight`);
-        let scrollAttempts = 0;
-        const maxScrollAttempts = 10;
+        let scrollAttempts = 20;
+        const maxScrollAttempts = 40;
 
         while (itemTargetCount > items.length && scrollAttempts < maxScrollAttempts) {
             items = await extractItems(page);
@@ -68,14 +141,18 @@ const scrollPage = async (page, scrollContainer, itemTargetCount) => {
 };
 
 const validatePhone = (phone) => {
-    const phoneNumber = parsePhoneNumberFromString(phone, 'AR'); // Reemplaza 'AR' por tu código de país
-    if (phoneNumber && phoneNumber.isValid()) {
-        return phoneNumber.formatInternational();
+    try {
+        const phoneNumber = parsePhoneNumberFromString(phone, 'AR');
+        if (phoneNumber && phoneNumber.isValid()) {
+            return phoneNumber.formatInternational();
+        }
+    } catch (error) {
+        console.warn('Error validating phone:', phone, error.message);
     }
     return 'No phone available';
 };
 
-const getMapsData = async (query) => {
+const getMapsData = async (query, limit = 100) => {
     let browser;
     try {
         browser = await puppeteer.launch({
@@ -95,14 +172,40 @@ const getMapsData = async (query) => {
         await new Promise(resolve => setTimeout(resolve, 5000));
 
         // Iniciar scroll y recolección de datos
-        let businesses = await scrollPage(page, ".m6QErb[aria-label]", 100);
+        let businesses = await scrollPage(page, ".m6QErb[aria-label]", limit);
 
-        // Validar y formatear los números de teléfono
-        businesses = businesses.map(business => ({
-            ...business,
-            phone_num: validatePhone(business.phone_num),
-        }));
+        // Filtrar negocios válidos (que tengan al menos título)
+        businesses = businesses.filter(business => business.title && business.title !== 'Unknown Business');
 
+        // Procesar y enriquecer los datos - ORDEN CORREGIDO
+        businesses = businesses.map(business => {
+            // 1. Primero validar teléfono
+            const validatedPhone = validatePhone(business.phone_num);
+            
+            // 2. Luego analizar website
+            const websiteAnalysis = analyzeWebsite(business.website);
+            
+            // 3. Crear objeto business completo con websiteAnalysis
+            const enrichedBusiness = {
+                ...business,
+                phone_num: validatedPhone,
+                websiteAnalysis,
+                extractedAt: new Date().toISOString()
+            };
+            
+            // 4. Finalmente calcular opportunity score con el objeto completo
+            const opportunityScore = calculateOpportunityScore(enrichedBusiness);
+            
+            return {
+                ...enrichedBusiness,
+                opportunityScore
+            };
+        });
+
+        // Ordenar por score de oportunidad (mayor a menor)
+        businesses.sort((a, b) => b.opportunityScore - a.opportunityScore);
+
+        console.log(`Procesados ${businesses.length} negocios para la consulta: ${query}`);
         return businesses;
     } catch (error) {
         throw new Error(`Error durante la navegación de Google Maps: ${error.message}`);
@@ -112,26 +215,124 @@ const getMapsData = async (query) => {
 };
 
 app.get('/', async (req, res) => {
-    return res.send('Hello world!');
+    return res.send('Lead Generator API - Sistema de búsqueda de clientes potenciales');
 });
 
 app.post('/api/scrape', async (req, res) => {
-    const { query } = req.body;
+    const { query, limit = 100, filters } = req.body;
+    
     if (!query) {
         return res.status(400).json({ error: 'Falta la consulta de búsqueda' });
     }
 
     try {
-        const data = await getMapsData(query);
-        res.json({ businesses: data });
+        let data = await getMapsData(query, limit);
+        
+        // Verificar que todos los negocios tengan websiteAnalysis
+        data = data.filter(business => {
+            if (!business.websiteAnalysis) {
+                console.warn('Business without websiteAnalysis filtered out:', business.title);
+                return false;
+            }
+            return true;
+        });
+        
+        // Aplicar filtros si se especifican
+        if (filters) {
+            if (filters.needsWebsite) {
+                data = data.filter(business => 
+                    business.websiteAnalysis && business.websiteAnalysis.needsWebsite);
+            }
+            
+            if (filters.minRating) {
+                data = data.filter(business => 
+                    business.rating && business.rating >= filters.minRating);
+            }
+            
+            if (filters.minReviews) {
+                data = data.filter(business => 
+                    business.reviewCount >= filters.minReviews);
+            }
+            
+            if (filters.categories && filters.categories.length > 0) {
+                data = data.filter(business =>
+                    business.category && filters.categories.some(cat => 
+                        business.category.toLowerCase().includes(cat.toLowerCase()))
+                );
+            }
+        }
+
+        // Estadísticas de la búsqueda
+        const stats = {
+            total: data.length,
+            needsWebsite: data.filter(b => b.websiteAnalysis && b.websiteAnalysis.needsWebsite).length,
+            hasPhone: data.filter(b => b.phone_num !== 'No phone available').length,
+            highOpportunity: data.filter(b => b.opportunityScore >= 70).length,
+            averageRating: data.length > 0 ? data.reduce((sum, b) => sum + (b.rating || 0), 0) / data.length : 0
+        };
+
+        res.json({ 
+            businesses: data,
+            stats,
+            query,
+            extractedAt: new Date().toISOString()
+        });
     } catch (error) {
         console.error('Error al hacer scraping:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
+// Endpoint para obtener estadísticas de oportunidades
+app.post('/api/analyze', async (req, res) => {
+    const { businesses } = req.body;
+    
+    if (!businesses || !Array.isArray(businesses)) {
+        return res.status(400).json({ error: 'Se requiere un array de negocios' });
+    }
+
+    try {
+        const validBusinesses = businesses.filter(b => b.websiteAnalysis);
+        
+        const analysis = {
+            totalBusinesses: validBusinesses.length,
+            highPriority: validBusinesses.filter(b => b.websiteAnalysis.priority === 'high').length,
+            mediumPriority: validBusinesses.filter(b => b.websiteAnalysis.priority === 'medium').length,
+            lowPriority: validBusinesses.filter(b => b.websiteAnalysis.priority === 'low').length,
+            averageOpportunityScore: validBusinesses.length > 0 ? 
+                validBusinesses.reduce((sum, b) => sum + (b.opportunityScore || 0), 0) / validBusinesses.length : 0,
+            topCategories: getTopCategories(validBusinesses),
+            websiteTypes: {
+                none: validBusinesses.filter(b => b.websiteAnalysis.type === 'none').length,
+                socialOnly: validBusinesses.filter(b => b.websiteAnalysis.type === 'social_only').length,
+                basicPlatform: validBusinesses.filter(b => b.websiteAnalysis.type === 'basic_platform').length,
+                professional: validBusinesses.filter(b => b.websiteAnalysis.type === 'professional').length
+            }
+        };
+
+        res.json(analysis);
+    } catch (error) {
+        console.error('Error in analysis:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Función auxiliar para obtener las categorías más comunes
+const getTopCategories = (businesses) => {
+    const categoryCount = {};
+    businesses.forEach(business => {
+        if (business.category) {
+            categoryCount[business.category] = (categoryCount[business.category] || 0) + 1;
+        }
+    });
+    
+    return Object.entries(categoryCount)
+        .sort(([,a], [,b]) => b - a)
+        .slice(0, 5)
+        .map(([category, count]) => ({ category, count }));
+};
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor escuchando en el puerto ${PORT}`);
+    console.log(`Servidor Lead Generator escuchando en el puerto ${PORT}`);
 });
- 
